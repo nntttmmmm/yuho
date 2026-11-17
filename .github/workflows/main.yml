@@ -1,0 +1,30 @@
+name: Check EDINET Reports
+
+on:
+  schedule:
+    - cron: '30 15 * * *' # 毎日日本時間深夜0時半などに実行（UTC 15:30）
+  workflow_dispatch: # 手動でもいつでもテスト実行できるようにするボタン
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run script
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python main.py
