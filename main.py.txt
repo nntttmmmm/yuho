@@ -1,0 +1,97 @@
+import os
+import requests
+from google import genai
+
+# 環境変数からAPIキーを取得
+EDINET_API_KEY = os.environ.get("EDINET_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+
+
+def get_edinet_documents():
+    """EDINET APIから本日の有価証券報告書（コード: 120）の一覧を取得する"""
+    from datetime import date
+
+    today = date.today().strftime("%Y-%m-%d")
+    url = f"https://api.edinet-fsa.go.jp/api/v2/documents.json?date={today}&type=2&Subscription-Key={EDINET_API_KEY}"
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+        results = data.get("results", [])
+
+        target_docs = []
+        for doc in results:
+            # 書類種別コード '120' が有価証券報告書
+            if doc.get("docTypeCode") == "120":
+                target_docs.append(
+                    {
+                        "docID": doc.get("docID"),
+                        "filerName": doc.get("filerName"),
+                        "docDescription": doc.get("docDescription"),
+                    }
+                )
+        return target_docs
+    except Exception as e:
+        print(f"EDINET API取得エラー: {e}")
+        return []
+
+
+def analyze_with_gemini(company_name, text_snippet):
+    """Gemini AIを使って受注実績の数値があるか判定・要約する"""
+    client = genai.Client(api_key=GEMINI_API_KEY)
+
+    prompt = f"""
+以下の企業（{company_name}）の有価証券報告書のテキストを読み、
+「第2 経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析」の「受注実績」に関する記述が含まれているか確認してください。
+
+【条件】
+- 単なる「受注環境が厳しかった」などの文字の言及ではなく、具体的な「受注高」「受注残高」などの**数値（金額や前年比など）**が掲載されているか？
+- 掲載されている場合、その数値の要点と前年比などを簡潔にまとめてください。
+- 数値が載っていない場合は「数値なし」とだけ答えてください。
+
+【テキスト】
+{text_snippet}
+"""
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+    return response.text
+
+
+def send_discord_notification(message):
+    """Discordへ通知を送る"""
+    if not DISCORD_WEBHOOK_URL:
+        print("Discord Webhook URLが設定されていません")
+        return
+    payload = {"content": message}
+    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+
+
+def main():
+    print("EDINETのチェックを開始します...")
+    docs = get_edinet_documents()
+    print(f"本日の有価証券報告書 該当件数: {len(docs)}件")
+
+    for doc in docs:
+        doc_id = doc["docID"]
+        filer_name = doc["filerName"]
+
+        # 本来はここでXBRLやテキストデータを取得しますが、
+        # サンプルとして簡易的にAPIから取れる書類概要やテキストを取得する処理を想定
+        # （※実際の運用では書類のテキストをここに入れ込みます）
+        sample_text = f"会社名: {filer_name} の有価証券報告書が提出されました。"
+
+        # AIに判定させる
+        result = analyze_with_gemini(filer_name, sample_text)
+
+        if "数値なし" not in result:
+            msg = f"🎯【有報・受注実績の数値検知】\n企業名: {filer_name}\n\n{result}"
+            send_discord_notification(msg)
+            print(f"通知送信: {filer_name}")
+
+
+if __name__ == "__main__":
+    main()
