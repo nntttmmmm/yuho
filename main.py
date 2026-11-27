@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import requests
@@ -7,6 +8,38 @@ from google import genai
 EDINET_API_KEY = os.environ.get("EDINET_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+
+# 処理済みdocIDを保存するファイル名
+PROCESSED_DOCS_FILE = "processed_docs.json"
+# 1回の実行で処理する最大件数
+BATCH_LIMIT = 10
+# 1件ごとの待機秒数（429レート制限対策）
+SLEEP_SECONDS = 5
+
+
+def load_processed_doc_ids(filepath=PROCESSED_DOCS_FILE):
+    """処理済みのdocID一覧を読み込む"""
+    if not os.path.exists(filepath):
+        return set()
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return set(data)
+            return set()
+    except Exception as e:
+        print(f"処理済みリスト読み込みエラー: {e}")
+        return set()
+
+
+def save_processed_doc_ids(doc_ids, filepath=PROCESSED_DOCS_FILE):
+    """処理済みのdocID一覧を保存する"""
+    try:
+        sorted_ids = sorted(doc_ids)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(sorted_ids, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"処理済みリスト保存エラー: {e}")
 
 
 def get_edinet_documents():
@@ -66,35 +99,61 @@ def send_discord_notification(message):
     """Discordへ通知を送る"""
     if not DISCORD_WEBHOOK_URL:
         print("Discord Webhook URLが設定されていません")
-        return
+        return False
     payload = {"content": message}
-    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    res = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    return res.status_code < 400
 
 
 def main():
     print("EDINETのチェックを開始します...")
-    docs = get_edinet_documents()
-    docs = docs[:10]  # 1回の実行で最大10件までに制限
-    print(f"本日の有価証券報告書 該当件数: {len(docs)}件（最大10件まで処理）")
+    all_docs = get_edinet_documents()
+    processed_ids = load_processed_doc_ids()
 
-    for doc in docs:
+    # 未処理の書類だけを抽出
+    unprocessed_docs = [
+        doc for doc in all_docs if doc.get("docID") and doc["docID"] not in processed_ids
+    ]
+
+    # 1回の実行で最大BATCH_LIMIT件までに制限
+    target_docs = unprocessed_docs[:BATCH_LIMIT]
+
+    print(
+        f"本日の有報該当: {len(all_docs)}件 / 未処理: {len(unprocessed_docs)}件 / 今回処理: {len(target_docs)}件"
+    )
+
+    for doc in target_docs:
         doc_id = doc["docID"]
         filer_name = doc["filerName"]
 
-        # 本来はここでXBRLやテキストデータを取得しますが、
-        # サンプルとして簡易的にAPIから取れる書類概要やテキストを取得する処理を想定
-        # （※実際の運用では書類のテキストをここに入れ込みます）
-        sample_text = f"会社名: {filer_name} の有価証券報告書が提出されました。"
+        try:
+            # 本来はここでXBRLやテキストデータを取得しますが、
+            # サンプルとして簡易的にAPIから取れる書類概要やテキストを取得する処理を想定
+            # （※実際の運用では書類のテキストをここに入れ込みます）
+            sample_text = f"会社名: {filer_name} の有価証券報告書が提出されました。"
 
-        # AIに判定させる
-        result = analyze_with_gemini(filer_name, sample_text)
+            # AIに判定させる
+            result = analyze_with_gemini(filer_name, sample_text)
 
-        if "数値なし" not in result:
-            msg = f"🎯【有報・受注実績の数値検知】\n企業名: {filer_name}\n\n{result}"
-            send_discord_notification(msg)
-            print(f"通知送信: {filer_name}")
+            if "数値なし" not in result:
+                msg = f"🎯【有報・受注実績の数値検知】\n企業名: {filer_name}\n\n{result}"
+                sent = send_discord_notification(msg)
+                if sent:
+                    print(f"通知送信: {filer_name} ({doc_id})")
+                else:
+                    print(f"通知送信に失敗したため記録をスキップ: {filer_name} ({doc_id})")
+                    continue
+            else:
+                print(f"数値なし: {filer_name} ({doc_id})")
 
-        time.sleep(5)
+            # Gemini判定・通知まで完了したものだけを処理済みとして記録（取りこぼし防止）
+            processed_ids.add(doc_id)
+            save_processed_doc_ids(processed_ids)
+
+        except Exception as e:
+            print(f"処理エラー（次回再試行対象） {filer_name} ({doc_id}): {e}")
+
+        time.sleep(SLEEP_SECONDS)
 
 
 if __name__ == "__main__":
