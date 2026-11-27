@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from google import genai
 
@@ -73,7 +74,8 @@ def send_discord_notification(message):
 def main():
     print("EDINETのチェックを開始します...")
     docs = get_edinet_documents()
-    print(f"本日の有価証券報告書 該当件数: {len(docs)}件")
+    docs = docs[:10]  # 1回の実行で最大10件までに制限
+    print(f"本日の有価証券報告書 該当件数: {len(docs)}件（最大10件まで処理）")
 
     for doc in docs:
         doc_id = doc["docID"]
@@ -91,6 +93,8 @@ def main():
             msg = f"🎯【有報・受注実績の数値検知】\n企業名: {filer_name}\n\n{result}"
             send_discord_notification(msg)
             print(f"通知送信: {filer_name}")
+
+        time.sleep(5)
 
 
 if __name__ == "__main__":
